@@ -99,21 +99,41 @@ pipeline {
 
 	stage('Rolling Deployment') {
 	    steps {
-		echo 'Deploying new web application image...'
+		script {
+		    try {
+			echo 'Starting Kubernetes rolling deployment...'
 
-		sh '''
-		    sed "s|image: jenkins-webapp:1.0|image: ${WEB_IMAGE}:${BUILD_NUMBER}|" deployment.yaml \
-		      | kubectl apply -f -
+			sh '''
+			    sed "s|image: jenkins-webapp:1.0|image: ${WEB_IMAGE}:${BUILD_NUMBER}|" deployment.yaml \
+			      | kubectl apply -f -
 
-		    kubectl apply -f service.yaml
+			    kubectl apply -f service.yaml
 
-		    kubectl rollout status \
-		      deployment/${DEPLOYMENT} \
-		      --timeout=180s
-		'''
+			    kubectl rollout status \
+			      deployment/${DEPLOYMENT} \
+			      --timeout=180s
+			'''
+
+			echo 'Kubernetes rolling deployment completed successfully.'
+		    }
+		    catch (Exception e) {
+			echo "Rolling deployment failed: ${e}"
+
+			echo 'Attempting Kubernetes rollback...'
+
+			sh '''
+			    kubectl rollout undo deployment/${DEPLOYMENT}
+
+			    kubectl rollout status \
+			      deployment/${DEPLOYMENT} \
+			      --timeout=180s
+			'''
+
+			error('Deployment failed. Rollback was attempted.')
+		    }
+		}
 	    }
 	}
-
 	stage('Verify Web Deployment') {
 	    steps {
 		echo 'Checking Kubernetes application health...'
