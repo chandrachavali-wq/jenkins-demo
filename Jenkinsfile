@@ -96,10 +96,11 @@ pipeline {
                 '''
             }
         }
-
-	stage('Rolling Deployment') {
+	stage('Deploy and Verify Web Application') {
 	    steps {
 		script {
+		    def deploymentStarted = false
+
 		    try {
 			echo 'Starting Kubernetes rolling deployment...'
 
@@ -108,62 +109,74 @@ pipeline {
 			      | kubectl apply -f -
 
 			    kubectl apply -f service.yaml
-
-			    kubectl rollout status \
-			      deployment/${DEPLOYMENT} \
-			      --timeout=180s
 			'''
 
-			echo 'Kubernetes rolling deployment completed successfully.'
-		    }
-		    catch (Exception e) {
-			echo "Rolling deployment failed: ${e}"
-
-			echo 'Attempting Kubernetes rollback...'
+			deploymentStarted = true
 
 			sh '''
-			    kubectl rollout undo deployment/${DEPLOYMENT}
-
-			    kubectl rollout status \
-			      deployment/${DEPLOYMENT} \
-			      --timeout=180s
+			    kubectl rollout status deployment/${DEPLOYMENT} --timeout=180s
 			'''
 
-			error('Deployment failed. Rollback was attempted.')
+			echo 'Rolling deployment successful.'
+
+			echo 'Checking Kubernetes application health...'
+
+			sh '''
+			    kubectl get deployment ${DEPLOYMENT}
+
+			    kubectl get pods -l app=jenkins-webapp
+
+			    kubectl get svc jenkins-webapp-service
+
+			    kubectl run webapp-health-${BUILD_NUMBER} \
+			      --image=curlimages/curl:8.12.1 \
+			      --restart=Never \
+			      --image-pull-policy=IfNotPresent \
+			      --command -- \
+			      curl --fail --silent --show-error \
+			      --retry 5 --retry-delay 2 \
+			      http://jenkins-webapp-service/health
+
+			    kubectl wait \
+			      --for=jsonpath='{.status.phase}'=Succeeded \
+			      pod/webapp-health-${BUILD_NUMBER} \
+			      --timeout=120s
+
+			    kubectl logs pod/webapp-health-${BUILD_NUMBER}
+			'''
+
+			echo 'Application health verification successful.'
+		    }
+		    catch (Exception e) {
+			echo "Deployment or health verification failed: ${e}"
+
+			if (deploymentStarted) {
+			    echo 'Attempting Kubernetes rollback...'
+
+			    sh '''
+				kubectl rollout undo deployment/${DEPLOYMENT}
+
+				kubectl rollout status deployment/${DEPLOYMENT} \
+				  --timeout=180s
+			    '''
+
+			    echo 'Rollback completed.'
+			}
+
+			error('Deployment or health verification failed.')
+		    }
+		    finally {
+			echo 'Cleaning up temporary health-check Pod...'
+
+			sh '''
+			    kubectl delete pod webapp-health-${BUILD_NUMBER} \
+			      --ignore-not-found=true \
+			      --wait=false
+			'''
 		    }
 		}
 	    }
 	}
-	stage('Verify Web Deployment') {
-	    steps {
-		echo 'Checking Kubernetes application health...'
-
-		sh '''
-		    kubectl get deployment ${DEPLOYMENT}
-
-		    kubectl get pods -l app=jenkins-webapp
-
-		    kubectl get svc jenkins-webapp-service
-
-		    kubectl run webapp-health-${BUILD_NUMBER} \
-		      --image=curlimages/curl:8.12.1 \
-		      --restart=Never \
-		      --image-pull-policy=IfNotPresent \
-		      --command -- \
-		      curl --fail --silent --show-error \
-		      --retry 5 --retry-delay 2 \
-		      http://jenkins-webapp-service/health
-
-		    kubectl wait \
-		      --for=jsonpath='{.status.phase}'=Succeeded \
-		      pod/webapp-health-${BUILD_NUMBER} \
-		      --timeout=120s
-
-		    kubectl logs pod/webapp-health-${BUILD_NUMBER}
-		'''
-	    }
-	}
-    }
     post {
         success {
             echo 'Jenkins Kubernetes CI/CD Pipeline SUCCESS!'
