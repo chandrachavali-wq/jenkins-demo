@@ -104,15 +104,16 @@ pipeline {
 			echo 'Starting Kubernetes rolling deployment...'
 
 			sh '''
-			    sed "s|image: jenkins-webapp:1.0|image: jenkins-webapp:invalid-test|" deployment.yaml \
+			    sed "s|image: jenkins-webapp:1.0|image: ${WEB_IMAGE}:${BUILD_NUMBER}|" deployment.yaml \
 			      | kubectl apply -f -
 
 			    kubectl apply -f service.yaml
 
 			    kubectl rollout status \
 			      deployment/${DEPLOYMENT} \
-			      --timeout=60s
+			      --timeout=180s
 			'''
+
 			echo 'Kubernetes rolling deployment completed successfully.'
 		    }
 		    catch (Exception e) {
