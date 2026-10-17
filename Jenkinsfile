@@ -178,6 +178,7 @@ pipeline {
 			'''
 
 			echo 'Checking application health...'
+			error('SIMULATED FAILURE: Testing rollback health verification')
 			sh '''
 			    kubectl run "webapp-health-${BUILD_NUMBER}" \
 			      -n "$NAMESPACE" \
