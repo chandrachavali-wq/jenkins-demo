@@ -229,6 +229,7 @@ pipeline {
 		}
 	    }
 	}
+    }	
     post {
         success {
             echo 'Jenkins Kubernetes CI/CD Pipeline SUCCESS!'
