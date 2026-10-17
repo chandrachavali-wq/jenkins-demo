@@ -178,8 +178,6 @@ pipeline {
 			'''
 
 			echo 'Checking application health...'
-			// Temporary test — remove after verification
-			error('SIMULATED FAILURE: Testing automatic Helm rollback')
 			sh '''
 			    kubectl run "webapp-health-${BUILD_NUMBER}" \
 			      -n "$NAMESPACE" \
