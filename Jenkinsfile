@@ -133,15 +133,20 @@ pipeline {
 
 			previousRevision = sh(
 			    script: '''
-				helm history "$HELM_RELEASE" \
-				  --namespace "$NAMESPACE" \
-				  -o json 2>/dev/null \
-				| python3 -c 'import json,sys; h=json.load(sys.stdin); print(next((r["revision"] for r in reversed(h) if r["status"] == "deployed"), ""))' \
-				|| true
+				if helm status "$HELM_RELEASE" \
+				     --namespace "$NAMESPACE" >/dev/null 2>&1; then
+
+				    helm history "$HELM_RELEASE" \
+				      --namespace "$NAMESPACE" \
+				      -o json |
+				    python3 -c 'import json,sys; h=json.load(sys.stdin); print(next((str(r["revision"]) for r in reversed(h) if r["status"] == "deployed"), ""))'
+
+				else
+				    echo ""
+				fi
 			    ''',
 			    returnStdout: true
 			).trim()
-
 			echo "Previous deployed Helm revision: ${previousRevision ?: 'None'}"
 
 			echo 'Deploying Python web application using Helm...'
