@@ -1,13 +1,19 @@
 pipeline {
     agent any
 
-    environment {
-        PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
-        IMAGE_NAME = "jenkins-python-demo"
-        WEB_IMAGE = "jenkins-webapp"
-        DEPLOYMENT = "jenkins-webapp"
-    }
+	environment {
+	    PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
 
+	    IMAGE_NAME = "jenkins-python-demo"
+	    WEB_IMAGE = "jenkins-webapp"
+
+	    DEPLOYMENT = "jenkins-python-webapp-helm-webapp"
+
+	    HELM_RELEASE = "jenkins-python-webapp"
+	    HELM_CHART = "./helm-webapp"
+
+	    NAMESPACE = "development"
+	}
     stages {
 
         stage('Build') {
@@ -60,6 +66,27 @@ pipeline {
             }
         }
 
+	stage('Validate Helm Chart') {
+	    steps {
+		echo 'Validating Helm chart...'
+
+		sh '''
+		    echo "Running Helm lint..."
+
+		    helm lint "$HELM_CHART"
+
+		    echo "Rendering Kubernetes manifests..."
+
+		    helm template "$HELM_RELEASE" "$HELM_CHART" \
+		      --namespace "$NAMESPACE" \
+		      --set-string image.tag="$BUILD_NUMBER" \
+		      > /dev/null
+
+		    echo "Helm chart validation successful."
+		'''
+	    }
+	}
+
         stage('Load Images into Minikube') {
             steps {
                 echo 'Loading Docker images into Kubernetes...'
@@ -99,84 +126,108 @@ pipeline {
 	stage('Deploy and Verify Web Application') {
 	    steps {
 		script {
-		    def deploymentStarted = false
+		    def previousRevision = ''
 
 		    try {
-			echo 'Starting Kubernetes rolling deployment...'
+			echo 'Checking existing Helm release...'
+
+			previousRevision = sh(
+			    script: '''
+				helm history "$HELM_RELEASE" \
+				  --namespace "$NAMESPACE" \
+				  -o json 2>/dev/null \
+				| python3 -c 'import json,sys; h=json.load(sys.stdin); print(next((r["revision"] for r in reversed(h) if r["status"] == "deployed"), ""))' \
+				|| true
+			    ''',
+			    returnStdout: true
+			).trim()
+
+			echo "Previous deployed Helm revision: ${previousRevision ?: 'None'}"
+
+			echo 'Deploying Python web application using Helm...'
 
 			sh '''
-			    sed "s|image: jenkins-webapp:1.0|image: ${WEB_IMAGE}:${BUILD_NUMBER}|" deployment.yaml \
-			      | kubectl apply -f -
-
-			    kubectl apply -f service.yaml
+			    helm upgrade --install "$HELM_RELEASE" "$HELM_CHART" \
+			      --namespace "$NAMESPACE" \
+			      --set-string image.repository="$WEB_IMAGE" \
+			      --set-string image.tag="$BUILD_NUMBER" \
+			      --wait \
+			      --timeout 5m
 			'''
 
-			deploymentStarted = true
+			echo 'Verifying Kubernetes deployment...'
 
 			sh '''
-			    kubectl rollout status deployment/${DEPLOYMENT} --timeout=180s
+			    kubectl rollout status \
+			      deployment/"$DEPLOYMENT" \
+			      -n "$NAMESPACE" \
+			      --timeout=180s
+
+			    kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE"
+
+			    kubectl get pods \
+			      -n "$NAMESPACE" \
+			      -l app.kubernetes.io/instance="$HELM_RELEASE"
+
+			    helm status "$HELM_RELEASE" -n "$NAMESPACE"
 			'''
 
-			echo 'Rolling deployment successful.'
-
-			echo 'Checking Kubernetes application health...'
+			echo 'Checking application health...'
 
 			sh '''
-			    kubectl get deployment ${DEPLOYMENT}
-
-			    kubectl get pods -l app=jenkins-webapp
-
-			    kubectl get svc jenkins-webapp-service
-
-			    kubectl run webapp-health-${BUILD_NUMBER} \
+			    kubectl run "webapp-health-${BUILD_NUMBER}" \
+			      -n "$NAMESPACE" \
 			      --image=curlimages/curl:8.12.1 \
 			      --restart=Never \
 			      --image-pull-policy=IfNotPresent \
 			      --command -- \
 			      curl --fail --silent --show-error \
-			      --retry 5 --retry-delay 2 \
-			      http://jenkins-webapp-service/health
+				--retry 5 --retry-delay 2 \
+				http://jenkins-python-webapp-helm-webapp:8081/health
 
 			    kubectl wait \
+			      -n "$NAMESPACE" \
 			      --for=jsonpath='{.status.phase}'=Succeeded \
-			      pod/webapp-health-${BUILD_NUMBER} \
+			      pod/"webapp-health-${BUILD_NUMBER}" \
 			      --timeout=120s
 
-			    kubectl logs pod/webapp-health-${BUILD_NUMBER}
+			    kubectl logs \
+			      -n "$NAMESPACE" \
+			      pod/"webapp-health-${BUILD_NUMBER}"
 			'''
 
-			echo 'Application health verification successful.'
+			echo 'Helm deployment and health verification successful.'
 		    }
 		    catch (Exception e) {
 			echo "Deployment or health verification failed: ${e}"
 
-			if (deploymentStarted) {
-			    echo 'Attempting Kubernetes rollback...'
+			if (previousRevision) {
+			    echo "Attempting Helm rollback to revision ${previousRevision}..."
 
-			    sh '''
-				kubectl rollout undo deployment/${DEPLOYMENT}
-
-				kubectl rollout status deployment/${DEPLOYMENT} \
-				  --timeout=180s
-			    '''
-
-			    echo 'Rollback completed.'
+			    sh """
+				helm rollback "\$HELM_RELEASE" "${previousRevision}" \
+				  --namespace "\$NAMESPACE" \
+				  --wait \
+				  --timeout 5m
+			    """
+			} else {
+			    echo 'No previous deployed revision exists; automatic rollback is unavailable.'
 			}
 
-			error('Deployment or health verification failed.')
+			error('Helm deployment or health verification failed.')
 		    }
 		    finally {
 			echo 'Cleaning up temporary health-check Pod...'
 
 			sh '''
-			    kubectl delete pod webapp-health-${BUILD_NUMBER} \
+			    kubectl delete pod "webapp-health-${BUILD_NUMBER}" \
+			      -n "$NAMESPACE" \
 			      --ignore-not-found=true \
 			      --wait=false
 			'''
 		    }
 		}
 	    }
-	}
 	}
     post {
         success {
