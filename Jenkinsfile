@@ -206,14 +206,49 @@ pipeline {
 			echo "Deployment or health verification failed: ${e}"
 
 			if (previousRevision) {
-			    echo "Attempting Helm rollback to revision ${previousRevision}..."
+				echo "Attempting Helm rollback to revision ${previousRevision}..."
 
-			    sh """
+				sh """
 				helm rollback "\$HELM_RELEASE" "${previousRevision}" \
 				  --namespace "\$NAMESPACE" \
 				  --wait \
 				  --timeout 5m
-			    """
+				"""
+				echo 'Verifying Kubernetes deployment after rollback...'
+
+				sh '''
+				    kubectl rollout status deployment/"$DEPLOYMENT" \
+				      -n "$NAMESPACE" \
+				      --timeout=180s
+
+				    kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE"
+				'''
+
+				echo 'Checking application health after rollback...'
+
+				sh '''
+				    kubectl run "rollback-health-${BUILD_NUMBER}" \
+				      -n "$NAMESPACE" \
+				      --image=curlimages/curl:8.12.1 \
+				      --restart=Never \
+				      --image-pull-policy=IfNotPresent \
+				      --command -- \
+				      curl --fail --silent --show-error \
+				      --retry 5 --retry-delay 2 \
+				      http://jenkins-python-webapp-helm-webapp:8081/health
+
+				    kubectl wait \
+				      -n "$NAMESPACE" \
+				      --for=jsonpath='{.status.phase}=Succeeded' \
+				      "pod/rollback-health-${BUILD_NUMBER}" \
+				      --timeout=120s
+
+				    kubectl logs \
+				      -n "$NAMESPACE" \
+				      "pod/rollback-health-${BUILD_NUMBER}"
+				'''
+
+				echo 'Rollback completed and application health verified.'
 			} else {
 			    echo 'No previous deployed revision exists; automatic rollback is unavailable.'
 			}
@@ -228,6 +263,10 @@ pipeline {
 			      -n "$NAMESPACE" \
 			      --ignore-not-found=true \
 			      --wait=false
+                            kubectl delete pod "rollback-health-${BUILD_NUMBER}" \
+                              -n "$NAMESPACE" \
+                              --ignore-not-found=true \
+                              --wait=false
 			'''
 		    }
 		}
