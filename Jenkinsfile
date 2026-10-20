@@ -21,13 +21,9 @@ pipeline {
 
 	stages {
 
-	stage('Build') {
-	    steps {
-		echo 'Compiling Python applications...'
-
-		sh '''
-		    python3 -m py_compile app.py webapp.py
-		'''
+	stage('Build Java Automation') {
+    steps {
+        sh 'mvn clean package'
 	    }
 	}
 
@@ -60,14 +56,13 @@ pipeline {
 	    }
 	}
 
-	stage('Docker Run') {
-	    steps {
-		echo 'Testing Python Job container...'
-
-		sh '''
-		    docker run --rm \
-		      ${IMAGE_NAME}:${BUILD_NUMBER}
-		'''
+	stage('Docker Build and Test via Java') {
+    steps {
+        sh '''
+            java -cp target/classes \
+                com.demo.sre.DockerManager \
+                "$BUILD_NUMBER"
+        '''
 	    }
 	}
 
