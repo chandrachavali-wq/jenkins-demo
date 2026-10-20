@@ -189,9 +189,9 @@ pipeline {
 		echo 'Creating Kubernetes batch Job...'
 
 		sh '''
-		    kubectl create job \
-		      jenkins-python-job-${BUILD_NUMBER} \
-		      --image=${IMAGE_NAME}:${BUILD_NUMBER}
+			kubectl create job jenkins-python-job-${BUILD_NUMBER} \
+			  -n "$NAMESPACE" \
+			  --image=${IMAGE_NAME}:${BUILD_NUMBER}	
 		'''
 	    }
 	}
@@ -238,14 +238,17 @@ pipeline {
 			echo 'Deploying Python web application using Helm...'
 
 			sh '''
-			    helm upgrade --install "$HELM_RELEASE" "$HELM_CHART" \
-			      --namespace "$NAMESPACE" \
-			      --set-string image.repository="$WEB_IMAGE" \
-			      --set-string image.tag="$BUILD_NUMBER" \
-			      --wait \
-			      --timeout 5m
-			'''
+				helm upgrade --install "$HELM_RELEASE" "$HELM_CHART" \
+				    --namespace "$NAMESPACE" \
+				    --set-string image.repository="$WEB_IMAGE" \
+				    --set-string image.tag="$BUILD_NUMBER" \
+				    --server-side=true \
+				    --force-conflicts \
+				    --wait \
+				    --timeout 5m			
 
+
+			'''
 			echo 'Verifying Kubernetes deployment...'
 
 			sh '''
