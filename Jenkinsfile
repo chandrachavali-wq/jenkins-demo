@@ -13,59 +13,122 @@ pipeline {
 	    HELM_CHART = "./helm-webapp"
 
 	    NAMESPACE = "development"
+
+	    ARTIFACTORY_URL = 'http://localhost:8086'
+	    ARTIFACTORY_REPO = 'jenkins-artifacts-local'
+	    ARTIFACT_NAME = 'jenkins-demo'
 	}
-    stages {
 
-        stage('Build') {
-            steps {
-                echo 'Compiling Python applications...'
+	stages {
 
-                sh '''
-                    python3 -m py_compile app.py webapp.py
-                '''
-            }
-        }
+	stage('Build') {
+	    steps {
+		echo 'Compiling Python applications...'
 
-        stage('Test') {
-            steps {
-                echo 'Running Python unit tests...'
+		sh '''
+		    python3 -m py_compile app.py webapp.py
+		'''
+	    }
+	}
 
-                sh '''
-                    python3 -m unittest discover -v
-                '''
-            }
-        }
+	stage('Test') {
+	    steps {
+		echo 'Running Python unit tests...'
 
-        stage('Docker Build') {
-            steps {
-                echo 'Building Python Job image...'
+		sh '''
+		    python3 -m unittest discover -v
+		'''
+	    }
+	}
 
-                sh '''
-                    docker build \
-                      -t ${IMAGE_NAME}:${BUILD_NUMBER} .
-                '''
+	stage('Docker Build') {
+	    steps {
+		echo 'Building Python Job image...'
 
-                echo 'Building Python Web Application image...'
+		sh '''
+		    docker build \
+		      -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+		'''
 
-                sh '''
-                    docker build \
-                      -f Dockerfile.web \
-                      -t ${WEB_IMAGE}:${BUILD_NUMBER} .
-                '''
-            }
-        }
+		echo 'Building Python Web Application image...'
 
-        stage('Docker Run') {
-            steps {
-                echo 'Testing Python Job container...'
+		sh '''
+		    docker build \
+		      -f Dockerfile.web \
+		      -t ${WEB_IMAGE}:${BUILD_NUMBER} .
+		'''
+	    }
+	}
 
-                sh '''
-                    docker run --rm \
-                      ${IMAGE_NAME}:${BUILD_NUMBER}
-                '''
-            }
-        }
+	stage('Docker Run') {
+	    steps {
+		echo 'Testing Python Job container...'
 
+		sh '''
+		    docker run --rm \
+		      ${IMAGE_NAME}:${BUILD_NUMBER}
+		'''
+	    }
+	}
+
+	stage('Publish to JFrog Artifactory') {
+	    steps {
+		echo 'Creating versioned application artifact...'
+
+		sh '''
+		    mkdir -p build
+
+		    zip -j "build/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip" \
+			app.py \
+			webapp.py \
+			Dockerfile \
+			Dockerfile.web
+
+		    ls -lh build/
+		'''
+
+		echo 'Uploading artifact to JFrog Artifactory...'
+
+		withCredentials([
+		    string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')
+		]) {
+		    sh '''
+			set +x
+
+			curl --fail-with-body --show-error \
+			    --retry 2 \
+			    -H "Authorization: Bearer $JFROG_TOKEN" \
+			    -T "build/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip" \
+			    "${ARTIFACTORY_URL}/artifactory/${ARTIFACTORY_REPO}/${ARTIFACT_NAME}/build-${BUILD_NUMBER}/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip"
+		    '''
+		}
+
+		echo 'Artifact uploaded successfully!'
+	    }
+	}
+
+	stage('Verify Artifactory Artifact') {
+	    steps {
+		echo 'Verifying uploaded artifact...'
+
+		withCredentials([
+		    string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')
+		]) {
+		    sh '''
+			set +x
+
+			curl --fail --silent --show-error \
+			    --head \
+			    -H "Authorization: Bearer $JFROG_TOKEN" \
+			    "${ARTIFACTORY_URL}/artifactory/${ARTIFACTORY_REPO}/${ARTIFACT_NAME}/build-${BUILD_NUMBER}/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip" \
+			    > /dev/null
+		    '''
+		}
+
+		echo 'Artifact verified in JFrog Artifactory!'
+	    }
+	}
+	
 	stage('Validate Helm Chart') {
 	    steps {
 		echo 'Validating Helm chart...'
@@ -87,42 +150,42 @@ pipeline {
 	    }
 	}
 
-        stage('Load Images into Minikube') {
-            steps {
-                echo 'Loading Docker images into Kubernetes...'
+	stage('Load Images into Minikube') {
+	    steps {
+		echo 'Loading Docker images into Kubernetes...'
 
-                sh '''
-                    minikube image load ${IMAGE_NAME}:${BUILD_NUMBER}
-                    minikube image load ${WEB_IMAGE}:${BUILD_NUMBER}
-                '''
-            }
-        }
+		sh '''
+		    minikube image load ${IMAGE_NAME}:${BUILD_NUMBER}
+		    minikube image load ${WEB_IMAGE}:${BUILD_NUMBER}
+		'''
+	    }
+	}
 
-        stage('Deploy Kubernetes Job') {
-            steps {
-                echo 'Creating Kubernetes batch Job...'
+	stage('Deploy Kubernetes Job') {
+	    steps {
+		echo 'Creating Kubernetes batch Job...'
 
-                sh '''
-                    kubectl create job \
-                      jenkins-python-job-${BUILD_NUMBER} \
-                      --image=${IMAGE_NAME}:${BUILD_NUMBER}
-                '''
-            }
-        }
+		sh '''
+		    kubectl create job \
+		      jenkins-python-job-${BUILD_NUMBER} \
+		      --image=${IMAGE_NAME}:${BUILD_NUMBER}
+		'''
+	    }
+	}
 
-        stage('Verify Kubernetes Job') {
-            steps {
-                sh '''
-                    kubectl wait \
-                      --for=condition=complete \
-                      job/jenkins-python-job-${BUILD_NUMBER} \
-                      --timeout=120s
+	stage('Verify Kubernetes Job') {
+	    steps {
+		sh '''
+		    kubectl wait \
+		      --for=condition=complete \
+		      job/jenkins-python-job-${BUILD_NUMBER} \
+		      --timeout=120s
 
-                    kubectl logs \
-                      job/jenkins-python-job-${BUILD_NUMBER}
-                '''
-            }
-        }
+		    kubectl logs \
+		      job/jenkins-python-job-${BUILD_NUMBER}
+		'''
+	    }
+	}
 	stage('Deploy and Verify Web Application') {
 	    steps {
 		script {
@@ -264,23 +327,23 @@ pipeline {
 			      -n "$NAMESPACE" \
 			      --ignore-not-found=true \
 			      --wait=false
-                            kubectl delete pod "rollback-health-${BUILD_NUMBER}" \
-                              -n "$NAMESPACE" \
-                              --ignore-not-found=true \
-                              --wait=false
+			    kubectl delete pod "rollback-health-${BUILD_NUMBER}" \
+			      -n "$NAMESPACE" \
+			      --ignore-not-found=true \
+			      --wait=false
 			'''
 		    }
 		}
 	    }
 	}
-    }	
-    post {
-        success {
-            echo 'Jenkins Kubernetes CI/CD Pipeline SUCCESS!'
-        }
+	}	
+	post {
+	success {
+	    echo 'Jenkins Kubernetes CI/CD Pipeline SUCCESS!'
+	}
 
-        failure {
-            echo 'Jenkins Kubernetes CI/CD Pipeline FAILED!'
-        }
-    }
+	failure {
+	    echo 'Jenkins Kubernetes CI/CD Pipeline FAILED!'
+	}
+	}
 }
