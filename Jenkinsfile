@@ -1,377 +1,96 @@
+
 pipeline {
     agent any
 
-	environment {
-	    PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
-
-	    IMAGE_NAME = "jenkins-python-demo"
-	    WEB_IMAGE = "jenkins-webapp"
-
-	    DEPLOYMENT = "jenkins-python-webapp-helm-webapp"
-
-	    HELM_RELEASE = "jenkins-python-webapp"
-	    HELM_CHART = "./helm-webapp"
-
-	    NAMESPACE = "development"
-
-	    ARTIFACTORY_URL = 'http://localhost:8086'
-	    ARTIFACTORY_REPO = 'jenkins-artifacts-local'
-	    ARTIFACT_NAME = 'jenkins-demo'
-	}
-
-	stages {
-
-	stage('Build Java Automation') {
-    steps {
-        sh 'mvn clean package'
-	    }
-	}
-
-	stage('Test') {
-	    steps {
-		echo 'Running Python unit tests...'
-
-		sh '''
-		    python3 -m unittest discover -v
-		'''
-	    }
-	}
-
-	stage('Docker Build') {
-	    steps {
-		echo 'Building Python Job image...'
-
-		sh '''
-		    docker build \
-		      -t ${IMAGE_NAME}:${BUILD_NUMBER} .
-		'''
-
-		echo 'Building Python Web Application image...'
-
-		sh '''
-		    docker build \
-		      -f Dockerfile.web \
-		      -t ${WEB_IMAGE}:${BUILD_NUMBER} .
-		'''
-	    }
-	}
-
-	stage('Docker Build and Test via Java') {
-    steps {
-        sh '''
-            java -cp target/classes \
-                com.demo.sre.DockerManager \
-                "$BUILD_NUMBER"
-        '''
-	    }
-	}
-
-	stage('Publish to JFrog Artifactory') {
-	    steps {
-		echo 'Creating versioned application artifact...'
-
-		sh '''
-		    mkdir -p build
-
-		    zip -j "build/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip" \
-			app.py \
-			webapp.py \
-			Dockerfile \
-			Dockerfile.web
-
-		    ls -lh build/
-		'''
-
-		echo 'Uploading artifact to JFrog Artifactory...'
-
-		withCredentials([
-		    string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')
-		]) {
-		    sh '''
-			set +x
-
-			curl --fail-with-body --show-error \
-			    --retry 2 \
-			    -H "Authorization: Bearer $JFROG_TOKEN" \
-			    -T "build/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip" \
-			    "${ARTIFACTORY_URL}/artifactory/${ARTIFACTORY_REPO}/${ARTIFACT_NAME}/build-${BUILD_NUMBER}/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip"
-		    '''
-		}
-
-		echo 'Artifact uploaded successfully!'
-	    }
-	}
-
-	stage('Verify Artifactory Artifact') {
-	    steps {
-		echo 'Verifying uploaded artifact...'
-
-		withCredentials([
-		    string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')
-		]) {
-		    sh '''
-			set +x
-
-			curl --fail --silent --show-error \
-			    --head \
-			    -H "Authorization: Bearer $JFROG_TOKEN" \
-			    "${ARTIFACTORY_URL}/artifactory/${ARTIFACTORY_REPO}/${ARTIFACT_NAME}/build-${BUILD_NUMBER}/${ARTIFACT_NAME}-${BUILD_NUMBER}.zip" \
-			    > /dev/null
-		    '''
-		}
-
-		echo 'Artifact verified in JFrog Artifactory!'
-	    }
-	}
-	
-	stage('Validate Helm Chart') {
-	    steps {
-		echo 'Validating Helm chart...'
-
-		sh '''
-		    echo "Running Helm lint..."
-
-		    helm lint "$HELM_CHART"
-
-		    echo "Rendering Kubernetes manifests..."
-
-		    helm template "$HELM_RELEASE" "$HELM_CHART" \
-		      --namespace "$NAMESPACE" \
-		      --set-string image.tag="$BUILD_NUMBER" \
-		      > /dev/null
-
-		    echo "Helm chart validation successful."
-		'''
-	    }
-	}
-
-	stage('Select Kubernetes Context') {
-	    steps {
-		echo 'Selecting Minikube Kubernetes cluster...'
-
-		sh '''
-		    kubectl config use-context minikube
-		    kubectl config current-context
-		    kubectl get nodes
-		'''
-	    }
-	}
-
-	stage('Ensure Kubernetes Namespace') {
-	    steps {
-		echo 'Ensuring Kubernetes namespace exists...'
-
-		sh '''
-		    kubectl create namespace "$NAMESPACE" \
-			--dry-run=client -o yaml | kubectl apply -f -
-		'''
-	    }
-	}
-
-	stage('Load Images into Minikube') {
-	    steps {
-		echo 'Loading Docker images into Kubernetes...'
-
-		sh '''
-		    minikube image load ${IMAGE_NAME}:${BUILD_NUMBER}
-		    minikube image load ${WEB_IMAGE}:${BUILD_NUMBER}
-		'''
-	    }
-	}
-
-	stage('Deploy Kubernetes Job') {
-	    steps {
-		echo 'Creating Kubernetes batch Job...'
-
-		sh '''
-			kubectl create job jenkins-python-job-${BUILD_NUMBER} \
-			  -n "$NAMESPACE" \
-			  --image=${IMAGE_NAME}:${BUILD_NUMBER}	
-		'''
-	    }
-	}
-
-	stage('Verify Kubernetes Job') {
-	    steps {
-		echo 'Waiting for Kubernetes Job to complete...'
-
-		sh '''
-		    kubectl wait \
-			-n "$NAMESPACE" \
-			--for=condition=complete \
-			job/jenkins-python-job-${BUILD_NUMBER} \
-			--timeout=120s
-
-		    echo "Kubernetes Job completed successfully."
-
-		    kubectl logs \
-			-n "$NAMESPACE" \
-			job/jenkins-python-job-${BUILD_NUMBER}
-		'''
-	    }
-	}
-
-	stage('Deploy and Verify Web Application') {
-	    steps {
-		script {
-		    def previousRevision = ''
-
-		    try {
-			echo 'Checking existing Helm release...'
-
-			previousRevision = sh(
-			    script: '''
-				if helm status "$HELM_RELEASE" \
-				     --namespace "$NAMESPACE" >/dev/null 2>&1; then
-
-				    helm history "$HELM_RELEASE" \
-				      --namespace "$NAMESPACE" \
-				      -o json |
-				    python3 -c 'import json,sys; h=json.load(sys.stdin); print(next((str(r["revision"]) for r in reversed(h) if r["status"] == "deployed"), ""))'
-
-				else
-				    echo ""
-				fi
-			    ''',
-			    returnStdout: true
-			).trim()
-			echo "Previous deployed Helm revision: ${previousRevision ?: 'None'}"
-
-			echo 'Deploying Python web application using Helm...'
-
-			sh '''
-				helm upgrade --install "$HELM_RELEASE" "$HELM_CHART" \
-				    --namespace "$NAMESPACE" \
-				    --set-string image.repository="$WEB_IMAGE" \
-				    --set-string image.tag="$BUILD_NUMBER" \
-				    --server-side=true \
-				    --force-conflicts \
-				    --wait \
-				    --timeout 5m			
-
-
-			'''
-			echo 'Verifying Kubernetes deployment...'
-
-			sh '''
-			    kubectl rollout status \
-			      deployment/"$DEPLOYMENT" \
-			      -n "$NAMESPACE" \
-			      --timeout=180s
-
-			    kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE"
-
-			    kubectl get pods \
-			      -n "$NAMESPACE" \
-			      -l app.kubernetes.io/instance="$HELM_RELEASE"
-
-			    helm status "$HELM_RELEASE" -n "$NAMESPACE"
-			'''
-
-			echo 'Checking application health...'
-			
-			sh '''
-			    kubectl run "webapp-health-${BUILD_NUMBER}" \
-			      -n "$NAMESPACE" \
-			      --image=curlimages/curl:8.12.1 \
-			      --restart=Never \
-			      --image-pull-policy=IfNotPresent \
-			      --command -- \
-			      curl --fail --silent --show-error \
-				--retry 5 --retry-delay 2 \
-				http://jenkins-python-webapp-helm-webapp:8081/health
-
-			    kubectl wait \
-			      -n "$NAMESPACE" \
-			      --for=jsonpath='{.status.phase}'=Succeeded \
-			      pod/"webapp-health-${BUILD_NUMBER}" \
-			      --timeout=120s
-
-			    kubectl logs \
-			      -n "$NAMESPACE" \
-			      pod/"webapp-health-${BUILD_NUMBER}"
-			'''
-
-			echo 'Helm deployment and health verification successful.'
-		    }
-		    catch (Exception e) {
-			echo "Deployment or health verification failed: ${e}"
-
-			if (previousRevision) {
-				echo "Attempting Helm rollback to revision ${previousRevision}..."
-
-				sh """
-				helm rollback "\$HELM_RELEASE" "${previousRevision}" \
-				  --namespace "\$NAMESPACE" \
-				  --wait \
-				  --timeout 5m
-				"""
-				echo 'Verifying Kubernetes deployment after rollback...'
-
-				sh '''
-				    kubectl rollout status deployment/"$DEPLOYMENT" \
-				      -n "$NAMESPACE" \
-				      --timeout=180s
-
-				    kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE"
-				'''
-
-				echo 'Checking application health after rollback...'
-
-				sh '''
-				    kubectl run "rollback-health-${BUILD_NUMBER}" \
-				      -n "$NAMESPACE" \
-				      --image=curlimages/curl:8.12.1 \
-				      --restart=Never \
-				      --image-pull-policy=IfNotPresent \
-				      --command -- \
-				      curl --fail --silent --show-error \
-				      --retry 5 --retry-delay 2 \
-				      http://jenkins-python-webapp-helm-webapp:8081/health
-
-				    kubectl wait \
-				      -n "$NAMESPACE" \
-				      --for=jsonpath='{.status.phase}=Succeeded' \
-				      "pod/rollback-health-${BUILD_NUMBER}" \
-				      --timeout=120s
-
-				    kubectl logs \
-				      -n "$NAMESPACE" \
-				      "pod/rollback-health-${BUILD_NUMBER}"
-				'''
-
-				echo 'Rollback completed and application health verified.'
-			} else {
-			    echo 'No previous deployed revision exists; automatic rollback is unavailable.'
-			}
-
-			error('Helm deployment or health verification failed.')
-		    }
-		    finally {
-			echo 'Cleaning up temporary health-check Pod...'
-
-			sh '''
-			    kubectl delete pod "webapp-health-${BUILD_NUMBER}" \
-			      -n "$NAMESPACE" \
-			      --ignore-not-found=true \
-			      --wait=false
-			    kubectl delete pod "rollback-health-${BUILD_NUMBER}" \
-			      -n "$NAMESPACE" \
-			      --ignore-not-found=true \
-			      --wait=false
-			'''
-		    }
-		}
-	    }
-	}
-	}	
-	post {
-	success {
-	    echo 'Jenkins Kubernetes CI/CD Pipeline SUCCESS!'
-	}
-
-	failure {
-	    echo 'Jenkins Kubernetes CI/CD Pipeline FAILED!'
-	}
-	}
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    environment {
+        PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
+        ARTIFACTORY_URL = 'http://localhost:8086'
+    }
+
+    stages {
+        stage('Python Build') {
+            steps {
+                sh 'python3 -m py_compile app.py webapp.py'
+            }
+        }
+
+        stage('Python Unit Tests') {
+            steps {
+                sh 'python3 -m unittest discover -v'
+            }
+        }
+
+        stage('Build Java Automation') {
+            steps {
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Docker Build and Test via Java') {
+            steps {
+                sh '''
+                    java -cp target/classes \
+                      com.demo.sre.DockerManager \
+                      "$BUILD_NUMBER"
+                '''
+            }
+        }
+
+        stage('Publish and Verify JFrog Artifact via Java') {
+            steps {
+                withCredentials([
+                    string(
+                        credentialsId: 'jfrog-token',
+                        variable: 'JFROG_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        set +x
+                        java -cp target/classes \
+                          com.demo.sre.ArtifactoryManager \
+                          "$BUILD_NUMBER"
+                    '''
+                }
+            }
+        }
+
+        stage('Kubernetes Automation via Java') {
+            steps {
+                sh '''
+                    java -cp target/classes \
+                      com.demo.sre.KubernetesManager \
+                      "$BUILD_NUMBER"
+                '''
+            }
+        }
+
+        stage('Helm Deployment via Java') {
+            steps {
+                sh '''
+                    mvn exec:java \
+                      -Dexec.mainClass=com.demo.sre.HelmManager \
+                      -Dexec.args="$BUILD_NUMBER"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Java-driven Jenkins CI/CD Pipeline SUCCESS!'
+        }
+
+        failure {
+            echo 'Java-driven Jenkins CI/CD Pipeline FAILED!'
+        }
+
+        always {
+            echo "Pipeline execution completed for build ${env.BUILD_NUMBER}"
+        }
+    }
 }
