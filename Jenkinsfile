@@ -198,17 +198,24 @@ pipeline {
 
 	stage('Verify Kubernetes Job') {
 	    steps {
+		echo 'Waiting for Kubernetes Job to complete...'
+
 		sh '''
 		    kubectl wait \
-		      --for=condition=complete \
-		      job/jenkins-python-job-${BUILD_NUMBER} \
-		      --timeout=120s
+			-n "$NAMESPACE" \
+			--for=condition=complete \
+			job/jenkins-python-job-${BUILD_NUMBER} \
+			--timeout=120s
+
+		    echo "Kubernetes Job completed successfully."
 
 		    kubectl logs \
-		      job/jenkins-python-job-${BUILD_NUMBER}
+			-n "$NAMESPACE" \
+			job/jenkins-python-job-${BUILD_NUMBER}
 		'''
 	    }
 	}
+
 	stage('Deploy and Verify Web Application') {
 	    steps {
 		script {
