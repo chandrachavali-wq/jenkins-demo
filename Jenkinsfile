@@ -150,6 +150,17 @@ pipeline {
 	    }
 	}
 
+	stage('Ensure Kubernetes Namespace') {
+	    steps {
+		echo 'Ensuring Kubernetes namespace exists...'
+
+		sh '''
+		    kubectl create namespace "$NAMESPACE" \
+			--dry-run=client -o yaml | kubectl apply -f -
+		'''
+	    }
+	}
+
 	stage('Load Images into Minikube') {
 	    steps {
 		echo 'Loading Docker images into Kubernetes...'
@@ -241,7 +252,7 @@ pipeline {
 			'''
 
 			echo 'Checking application health...'
-			error('SIMULATED FAILURE: Testing rollback health verification')
+			
 			sh '''
 			    kubectl run "webapp-health-${BUILD_NUMBER}" \
 			      -n "$NAMESPACE" \
