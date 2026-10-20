@@ -150,6 +150,18 @@ pipeline {
 	    }
 	}
 
+	stage('Select Kubernetes Context') {
+	    steps {
+		echo 'Selecting Minikube Kubernetes cluster...'
+
+		sh '''
+		    kubectl config use-context minikube
+		    kubectl config current-context
+		    kubectl get nodes
+		'''
+	    }
+	}
+
 	stage('Ensure Kubernetes Namespace') {
 	    steps {
 		echo 'Ensuring Kubernetes namespace exists...'
