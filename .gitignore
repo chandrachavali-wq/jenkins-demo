@@ -4,3 +4,5 @@ rendered-webapp.yaml
 /target/
 /build/
 /.vscode/
+
+/.automation/

@@ -1,0 +1,29 @@
+pipeline {
+    agent any
+    options { disableConcurrentBuilds(); timestamps() }
+    environment {
+        PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
+        ARTIFACTORY_URL = 'http://localhost:8086'
+    }
+    stages {
+        stage('Package Automation Release') {
+            steps {
+                sh 'mvn -B clean package'
+                sh 'java -jar target/sre-automation-*.jar --help'
+            }
+        }
+        stage('Publish and Verify Automation Release') {
+            steps {
+                withCredentials([string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')]) {
+                    sh '''
+                        set +x
+                        python3 scripts/publish-automation.py
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        success { archiveArtifacts artifacts: 'target/sre-automation-*.jar,target/*.sha256', fingerprint: true }
+    }
+}

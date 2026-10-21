@@ -9,6 +9,8 @@ pipeline {
 
     environment {
         PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
+        SRE_VERSION = '1.0.1'
+        SRE_JAR = '.automation/sre-automation.jar'
         ARTIFACTORY_URL = 'http://localhost:8086'
     }
 
@@ -25,17 +27,32 @@ pipeline {
             }
         }
 
-        stage('Build Java Automation') {
+        stage('Download and Verify Java Automation') {
             steps {
-                sh 'mvn clean package'
+                withCredentials([string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')]) {
+                    sh '''
+                        set +x
+                        set -eu
+                        mkdir -p .automation
+                        base="$ARTIFACTORY_URL/artifactory/jenkins-artifacts-local/sre-automation/$SRE_VERSION"
+                        name="sre-automation-$SRE_VERSION.jar"
+                        rm -f "$SRE_JAR" "$SRE_JAR.tmp"
+                        curl --fail --silent --show-error --header "Authorization: Bearer $JFROG_TOKEN" \
+                          "$base/$name" -o "$SRE_JAR.tmp"
+                        curl --fail --silent --show-error --header "Authorization: Bearer $JFROG_TOKEN" \
+                          "$base/$name.sha256" -o .automation/expected.sha256
+                        python3 scripts/verify-sha256.py "$SRE_JAR.tmp" .automation/expected.sha256
+                        mv "$SRE_JAR.tmp" "$SRE_JAR"
+                        java -jar "$SRE_JAR" --help
+                    '''
+                }
             }
         }
 
         stage('Docker Build and Test via Java') {
             steps {
                 sh '''
-                    java -cp target/classes \
-                      com.demo.sre.DockerManager \
+                    java -jar "$SRE_JAR" docker \
                       "$BUILD_NUMBER"
                 '''
             }
@@ -51,8 +68,7 @@ pipeline {
                 ]) {
                     sh '''
                         set +x
-                        java -cp target/classes \
-                          com.demo.sre.ArtifactoryManager \
+                        java -jar "$SRE_JAR" artifactory \
                           "$BUILD_NUMBER"
                     '''
                 }
@@ -62,8 +78,7 @@ pipeline {
         stage('Kubernetes Automation via Java') {
             steps {
                 sh '''
-                    java -cp target/classes \
-                      com.demo.sre.KubernetesManager \
+                    java -jar "$SRE_JAR" kubernetes \
                       "$BUILD_NUMBER"
                 '''
             }
@@ -72,9 +87,7 @@ pipeline {
         stage('Helm Deployment via Java') {
             steps {
                 sh '''
-                    mvn exec:java \
-                      -Dexec.mainClass=com.demo.sre.HelmManager \
-                      -Dexec.args="$BUILD_NUMBER"
+                    java -jar "$SRE_JAR" helm "$BUILD_NUMBER"
                 '''
             }
         }
