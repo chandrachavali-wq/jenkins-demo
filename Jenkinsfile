@@ -27,6 +27,7 @@ pipeline {
             }
         }
 
+        
         stage('ML Build Failure Prediction') {
             steps {
                 script {
@@ -49,19 +50,26 @@ pipeline {
                             returnStdout: true
                         ).trim()
 
-                        def result = new groovy.json.JsonSlurperClassic()
-                            .parseText(response)
+                        withEnv(["ML_RESPONSE=${response}"]) {
+                            sh '''
+                                python3 - <<'PY'
+        import json
+        import os
 
-                        echo """
-                        ===== ML BUILD RISK ANALYSIS =====
-                        Prediction          : ${result.prediction}
-                        Failure Probability : ${result.failure_probability * 100}%
-                        Pipeline Mode       : ADVISORY
-                        ================================
-                        """
+        result = json.loads(os.environ["ML_RESPONSE"])
+        prediction = result["prediction"]
+        probability = float(result["failure_probability"]) * 100
 
-                        if (result.prediction == 'HIGH_RISK') {
-                            echo 'WARNING: High build failure risk predicted.'
+        print("===== ML BUILD RISK ANALYSIS =====")
+        print(f"Prediction          : {prediction}")
+        print(f"Failure Probability : {probability:.1f}%")
+        print("Pipeline Mode       : ADVISORY")
+        print("==================================")
+
+        if prediction == "HIGH_RISK":
+            print("WARNING: High build failure risk predicted.")
+        PY
+                            '''
                         }
 
                     } catch (Exception e) {
@@ -71,6 +79,7 @@ pipeline {
                 }
             }
         }
+
 
         stage('Download and Verify Java Automation') {
             steps {
