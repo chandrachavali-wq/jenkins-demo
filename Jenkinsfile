@@ -27,6 +27,51 @@ pipeline {
             }
         }
 
+        stage('ML Build Failure Prediction') {
+            steps {
+                script {
+                    try {
+                        def response = sh(
+                            script: '''
+                                curl --fail --silent --show-error \
+                                --connect-timeout 3 \
+                                --max-time 15 \
+                                -X POST http://localhost:8001/predict \
+                                -H "Content-Type: application/json" \
+                                -d '{
+                                    "previous_failures": 3,
+                                    "queue_time_minutes": 12,
+                                    "previous_build_duration_minutes": 45,
+                                    "previous_build_cpu_percent": 90,
+                                    "previous_build_memory_percent": 85
+                                }'
+                            ''',
+                            returnStdout: true
+                        ).trim()
+
+                        def result = new groovy.json.JsonSlurperClassic()
+                            .parseText(response)
+
+                        echo """
+                        ===== ML BUILD RISK ANALYSIS =====
+                        Prediction          : ${result.prediction}
+                        Failure Probability : ${result.failure_probability * 100}%
+                        Pipeline Mode       : ADVISORY
+                        ================================
+                        """
+
+                        if (result.prediction == 'HIGH_RISK') {
+                            echo 'WARNING: High build failure risk predicted.'
+                        }
+
+                    } catch (Exception e) {
+                        echo "WARNING: ML prediction unavailable: ${e.message}"
+                        echo 'Continuing the existing CI/CD pipeline.'
+                    }
+                }
+            }
+        }
+
         stage('Download and Verify Java Automation') {
             steps {
                 withCredentials([string(credentialsId: 'jfrog-token', variable: 'JFROG_TOKEN')]) {
