@@ -9,7 +9,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class HelmManager {
 
-    private static final String CONTEXT = "minikube";
+    private static final String CONTEXT =
+                                    System.getenv().getOrDefault("KUBE_CONTEXT", "minikube");
     private static final String NAMESPACE = "development";
     private static final String RELEASE = "jenkins-python-webapp";
     private static final String CHART = "./helm-webapp";
@@ -18,14 +19,30 @@ public class HelmManager {
 
     public static void main(String[] args) throws Exception {
 
-        if (args.length != 1) {
+       if (args.length < 1 || args.length > 2 ||
+            (args.length == 2 &&
+            !"--simulate-failure".equals(args[1]))) {
+
             throw new IllegalArgumentException(
-                "Usage: HelmManager <build-number>"
+                "Usage: HelmManager <build-number> [--simulate-failure]"
             );
         }
 
         String buildNumber = args[0];
+
+        boolean simulateFailure =
+                args.length == 2 &&
+                "--simulate-failure".equals(args[1]);
+
+        String imageTag = simulateFailure
+                ? "nonexistent-rollback-test"
+                : buildNumber;
+
         String previousRevision = findLastDeployedRevision();
+
+        System.out.println(
+            "Rollback simulation enabled: " + simulateFailure
+        );
 
         try {
             System.out.println("Deploying image version: " + buildNumber);
@@ -36,11 +53,11 @@ public class HelmManager {
                 "--kube-context", CONTEXT,
                 "--namespace", NAMESPACE,
                 "--set-string", "image.repository=jenkins-webapp",
-                "--set-string", "image.tag=" + buildNumber,
+                "--set-string", "image.tag=" + imageTag,
                 "--server-side=true",
                 "--force-conflicts",
                 "--wait",
-                "--timeout", "5m"
+                "--timeout", simulateFailure ? "60s" : "5m"
             );
 
             CommandRunner.execute(
@@ -83,7 +100,13 @@ public class HelmManager {
                     "--timeout=180s"
                 );
 
-                System.out.println("Rollback succeeded.");
+               System.out.println("Verifying application health after rollback...");
+
+                verifyApplicationHealth(buildNumber + "-rollback");
+
+                System.out.println(
+                    "Rollback completed and application health verified."
+                );
             } else {
                 System.err.println(
                     "No previously deployed revision available."

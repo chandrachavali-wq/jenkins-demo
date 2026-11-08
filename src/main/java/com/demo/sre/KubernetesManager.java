@@ -2,7 +2,8 @@ package com.demo.sre;
 
 public class KubernetesManager {
 
-    private static final String CONTEXT = "minikube";
+    private static final String CONTEXT =
+                                    System.getenv().getOrDefault("KUBE_CONTEXT", "minikube");
     private static final String NAMESPACE = "development";
 
     public static void main(String[] args) throws Exception {
@@ -37,16 +38,16 @@ public class KubernetesManager {
         System.out.println("Loading Docker images into Minikube...");
 
         CommandRunner.execute(
-            "minikube", "image", "load", pythonImage
+            "minikube", "-p", CONTEXT, "image", "load", pythonImage
         );
 
         CommandRunner.execute(
-            "minikube", "image", "load", webImage
+            "minikube", "-p", CONTEXT, "image", "load", webImage
         );
 
         if (jobExists(jobName)) {
-    System.out.println(
-        "Kubernetes Job already exists: " + jobName
+            System.out.println(
+                     "Kubernetes Job already exists: " + jobName
     );
 } else {
     System.out.println("Creating Kubernetes Job...");

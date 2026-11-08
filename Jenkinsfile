@@ -9,8 +9,9 @@ pipeline {
 
     environment {
         PATH = "/Users/sekharchavali/.docker/bin:/opt/homebrew/bin:${env.PATH}"
-        SRE_VERSION = '1.0.1'
+        SRE_VERSION = '1.0.2'
         SRE_JAR = '.automation/sre-automation.jar'
+        KUBE_CONTEXT = 'minikube'
         ARTIFACTORY_URL = 'http://localhost:8086'
     }
 
@@ -39,47 +40,39 @@ pipeline {
                                 --max-time 15 \
                                 -X POST http://localhost:8001/predict \
                                 -H "Content-Type: application/json" \
-                                -d '{
-                                    "previous_failures": 3,
-                                    "queue_time_minutes": 12,
-                                    "previous_build_duration_minutes": 45,
-                                    "previous_build_cpu_percent": 90,
-                                    "previous_build_memory_percent": 85
-                                }'
+                                -d '{"previous_failures":3,"queue_time_minutes":12,"previous_build_duration_minutes":45,"previous_build_cpu_percent":90,"previous_build_memory_percent":85}'
                             ''',
                             returnStdout: true
                         ).trim()
 
                         withEnv(["ML_RESPONSE=${response}"]) {
-                            sh '''
-                                python3 - <<'PY'
-                                import json
-                                import os
+                            sh(script: '''
+        python3 - <<'PY'
+        import json
+        import os
 
-                                result = json.loads(os.environ["ML_RESPONSE"])
-                                prediction = result["prediction"]
-                                probability = float(result["failure_probability"]) * 100
+        result = json.loads(os.environ["ML_RESPONSE"])
+        prediction = result["prediction"]
+        probability = float(result["failure_probability"]) * 100
 
-                                print("===== ML BUILD RISK ANALYSIS =====")
-                                print(f"Prediction          : {prediction}")
-                                print(f"Failure Probability : {probability:.1f}%")
-                                print("Pipeline Mode       : ADVISORY")
-                                print("==================================")
+        print("===== ML BUILD RISK ANALYSIS =====")
+        print(f"Prediction          : {prediction}")
+        print(f"Failure Probability : {probability:.1f}%")
+        print("Pipeline Mode       : ADVISORY")
+        print("==================================")
 
-                                if prediction == "HIGH_RISK":
-                                    print("WARNING: High build failure risk predicted.")
-                                PY
-                                                    '''
-                                                }
-
-                                            } catch (Exception e) {
-                                                echo "WARNING: ML prediction unavailable: ${e.message}"
-                                                echo 'Continuing the existing CI/CD pipeline.'
-                                            }
-                                        }
-                                    }
-                                }
-
+        if prediction == "HIGH_RISK":
+            print("WARNING: High build failure risk predicted.")
+        PY
+        '''.stripIndent())
+                        }
+                    } catch (Exception e) {
+                        echo "WARNING: ML prediction unavailable: ${e.message}"
+                        echo 'Continuing the existing CI/CD pipeline.'
+                    }
+                }
+            }
+        }
 
         stage('Download and Verify Java Automation') {
             steps {
