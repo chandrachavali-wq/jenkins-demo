@@ -16,7 +16,34 @@ pipeline {
     }
 
     stages {
+        stage('Infrastructure Metrics Collection') {
+            steps {
+                script {
+                    try {
+                        sh '''
+                            mkdir -p metrics-history
 
+                            python3 scripts/collect_infrastructure_metrics.py > "metrics-history/infrastructure_${BUILD_NUMBER}.json"
+
+                            python3 -m json.tool "metrics-history/infrastructure_${BUILD_NUMBER}.json"
+                        '''
+                    } catch (Exception e) {
+                        echo "WARNING: Infrastructure metrics collection failed: ${e.message}"
+                        echo 'Continuing CI/CD pipeline in advisory mode.'
+                    }
+                }
+            }
+            post {
+                always {
+                    script {
+                        archiveArtifacts(
+                            artifacts: "metrics-history/infrastructure_${env.BUILD_NUMBER}.json",
+                            allowEmptyArchive: true
+                        )
+                    }
+                }
+            }
+        }
         stage('Python Build') {
             steps {
                 sh 'python3 -m py_compile app.py webapp.py'
