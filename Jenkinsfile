@@ -60,44 +60,22 @@ pipeline {
             steps {
                 script {
                     try {
-                        def response = sh(
-                            script: '''
-                                curl --fail --silent --show-error \
-                                  --connect-timeout 3 \
-                                  --max-time 15 \
-                                  -X POST http://localhost:8001/predict \
-                                  -H "Content-Type: application/json" \
-                                  -d '{"previous_failures":3,"queue_time_minutes":12,"previous_build_duration_minutes":45,"previous_build_cpu_percent":90,"previous_build_memory_percent":85}'
-                            '''.stripIndent(),
-                            returnStdout: true
-                        ).trim()
-
-                        withEnv(["ML_RESPONSE=${response}"]) {
+                        withCredentials([
+                            usernamePassword(
+                                credentialsId: 'jenkins-api',
+                                usernameVariable: 'JENKINS_USER',
+                                passwordVariable: 'JENKINS_TOKEN'
+                            )
+                        ]) {
                             sh '''
-                                python3 -c '
-import json
-import os
-
-result = json.loads(os.environ["ML_RESPONSE"])
-
-prediction = result["prediction"]
-probability = float(result["failure_probability"]) * 100
-
-print("===== ML BUILD RISK ANALYSIS =====")
-print(f"Prediction          : {prediction}")
-print(f"Failure Probability : {probability:.1f}%")
-print("Pipeline Mode       : ADVISORY")
-print("==================================")
-
-if prediction == "HIGH_RISK":
-    print("WARNING: High build failure risk predicted.")
-'
+                                set -eu
+                                python3 scripts/collect_build_metrics.py > build_metrics.json
+                                python3 scripts/predict_build_risk.py
                             '''
                         }
-
                     } catch (Exception e) {
                         echo "WARNING: ML prediction unavailable: ${e.message}"
-                        echo 'Continuing the existing CI/CD pipeline.'
+                        echo 'Continuing CI/CD pipeline in advisory mode.'
                     }
                 }
             }
